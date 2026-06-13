@@ -144,3 +144,10 @@ vite.config.ts.timestamp-*
 
 # Config secrets (never commit API keys)
 packages/*/extensions/*/config.json
+
+# Verdaccio local registry data
+.verdaccio/storage/
+.verdaccio/htpasswd
+
+# Local registry auth (fake token for Verdaccio dry-run)
+.npmrc
