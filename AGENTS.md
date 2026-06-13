@@ -3,12 +3,25 @@
 ## Codebase Practices
 
 1. Use package.json scripts when possible.
-2. Use `bun` package manager instead of `npm` / `pnpm` / `yarn`
+2. Use `bun` package manager instead of `npm` / `pnpm` / `yarn`. `bun` is pinned via `mise.toml`; if it isn't on `PATH`, run it as `mise exec -- bun ...`.
+3. Never hand-edit a package's `version` field — Changesets owns versioning.
 
-## Publishing and Installing Packages
+## Local Verification (Verdaccio)
 
-1. **NEVER install packages manually** on the local machine (no `npm install -g`, `bun add -g`, etc.). After publishing to the local Verdaccio registry, packages are installed via `pi update` — the standard pi upgrade flow handles everything.
-2. After `npm publish --registry http://localhost:4873`, just confirm the publish succeeded. Do not run any global install command.
+Verify the published tarball before any real release. Full steps are in the
+[README](./README.md#local-verification-verdaccio); the essentials:
+
+1. `bun run registry:start` — local registry at `http://localhost:4873` (anonymous publish allowed; no `npm login`). Leave it running.
+2. `bun run publish:local` — publish changed packages to it under the `local` tag.
+3. `npm_config_registry=http://localhost:4873 pi install npm:<pkg>` — `pi install` has **no `--registry` flag**; the registry comes from the `npm_config_registry` env var.
+4. Republishing the same version fails — bump it via Changesets or `rm -rf .verdaccio/storage` to re-test.
+
+## Publishing
+
+Versioning and publishing go through [Changesets](https://github.com/changesets/changesets) — see the [README](./README.md#publishing). Flow: `bun run changeset` → `bun run version` (+ commit) → `bun run publish` (needs `npm login`) → `git push --follow-tags`.
+
+1. **NEVER install packages manually** on the local machine (no `npm install -g`, `bun add -g`, etc.). Packages are consumed via `pi install` / `pi update` — the standard pi flow handles everything.
+2. After a publish, just confirm it succeeded. Do not run any global install command.
 
 ## Creating and maintaining Pi Extensions
 
