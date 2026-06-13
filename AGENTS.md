@@ -29,6 +29,7 @@ Versioning and publishing go through [Changesets](https://github.com/changesets/
 2. Create extensions using a domain-driven approach to avoid huge files — group code by domain concepts and responsibilities.
 3. Create extensions using a TDD approach to make sure that the code generated builds with the correct logic.
 4. Prefer less code to avoid too many moving parts, but never take shortcuts — simplicity without sacrificing correctness.
+5. When adding a new extension, also add its path to the **root `package.json` `pi.extensions`** array (e.g. `./packages/<name>/extensions/<name>`). The root manifest is what `pi install git:...` reads after cloning the monorepo — pi's git source has no subdirectory syntax, so anything missing from the root array won't install via git.
 
 ### Runtime constraint: Extensions run on Node.js, not Bun
 

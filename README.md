@@ -10,6 +10,28 @@ Each package is independently installable via `pi install`.
 |---------|-------------|---------|
 | `@tanqiuliu/pi-questionnaire` | Tool-first questionnaire flow + `/questionnaire` demo command | `pi install npm:@tanqiuliu/pi-questionnaire` |
 
+## Install without npm
+
+The whole collection can be installed straight from git — no npm publish needed:
+
+```bash
+pi install git:github.com/tanqiuliu/pi-extensions          # latest on default branch
+pi install git:github.com/tanqiuliu/pi-extensions@main     # pin a branch/tag/commit
+```
+
+This works because the **root `package.json` declares `pi.extensions`** listing
+every package's extension path — pi reads that from the repo root after cloning.
+pi's git source has no subdirectory syntax (only an optional `@ref`), so a single
+root manifest is how a monorepo exposes its extensions. **When you add a new
+extension, add its path to the root `pi.extensions` array too**, or it won't be
+picked up by a git install.
+
+For a single extension during local development, install from the path instead:
+
+```bash
+pi install ./packages/questionnaire
+```
+
 ## Development
 
 This repo uses [Bun](https://bun.sh) workspaces.

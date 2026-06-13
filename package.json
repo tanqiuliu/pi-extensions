@@ -5,6 +5,11 @@
   "workspaces": [
     "packages/*"
   ],
+  "pi": {
+    "extensions": [
+      "./packages/questionnaire/extensions/questionnaire"
+    ]
+  },
   "scripts": {
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "bun run --filter '*' lint",
