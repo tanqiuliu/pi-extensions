@@ -55,3 +55,10 @@ bun run format       # oxfmt --write
 1. Create `packages/<name>/` following the structure of `packages/questionnaire`.
 2. Give it a `package.json` with a `pi.extensions` array pointing at `./extensions/<name>`.
 3. Keep extension source Node.js-compatible (see [AGENTS.md](./AGENTS.md)).
+
+## License
+
+This project is licensed under the MIT License (see [LICENSE](./LICENSE)).
+
+It includes code derived from third-party MIT-licensed projects. 
+See [THIRD_PARTY_NOTICES.txt](./THIRD_PARTY_NOTICES.txt) for full attributions.

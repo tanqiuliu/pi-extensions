@@ -153,3 +153,10 @@ Cancelled:
 
 - User cancellation is **not treated as an error** (`cancelled: true` in details).
 - Non-interactive mode (`!ctx.hasUI`) returns an immediate error result (`isError: true`).
+
+## Attribution
+
+This package is derived from and modified based on
+[dreki-gg/pi-extensions](https://github.com/dreki-gg/pi-extensions)
+(MIT License, Copyright (c) 2026 Juan Albarran). See the repository's
+[THIRD_PARTY_NOTICES.txt](../../THIRD_PARTY_NOTICES.txt) for the full notice.
