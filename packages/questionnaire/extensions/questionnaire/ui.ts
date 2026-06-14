@@ -1,7 +1,5 @@
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import {
-  Editor,
-  type EditorTheme,
   Key,
   matchesKey,
   truncateToWidth,
@@ -15,19 +13,21 @@ import {
   isAnswerValid,
   normalizeAnswers,
 } from './format.js';
+import {
+  appendOtherDraftText,
+  commitOtherDraft,
+  deleteOtherDraftText,
+  getQuestionRenderOptions,
+  toggleCustomOther,
+  toggleListedOption,
+} from './question-state.js';
 import type {
   NormalizedQuestion,
   QuestionSelectionState,
   QuestionnaireResult,
   QuestionnaireUIState,
+  RenderOption,
 } from './types.js';
-
-interface RenderOption {
-  kind: 'listed' | 'other';
-  value: string;
-  label: string;
-  description?: string;
-}
 
 const REVIEW_LABEL_READY = ' ✓ Review ';
 const REVIEW_LABEL_PENDING = ' □ Review ';
@@ -42,20 +42,6 @@ function isSpaceKey(data: string): boolean {
 
 function isRKey(data: string): boolean {
   return data === 'r' || data === 'R' || matchesKey(data, 'r');
-}
-
-function getRenderOptions(question: NormalizedQuestion): RenderOption[] {
-  const listed: RenderOption[] = question.options.map((option) => ({
-    kind: 'listed',
-    value: option.value,
-    label: option.label,
-    description: option.description,
-  }));
-
-  if (!question.allowOther) return listed;
-
-  listed.push({ kind: 'other', value: '__other__', label: 'Other' });
-  return listed;
 }
 
 function pushWrappedText(lines: string[], text: string, width: number) {
@@ -91,7 +77,12 @@ function ensureQuestionState(
   stateById: Record<string, QuestionSelectionState>,
   questionId: string,
 ): QuestionSelectionState {
-  stateById[questionId] ??= { listedSelectedValues: [], otherText: '', wasOtherSelected: false };
+  stateById[questionId] ??= {
+    listedSelectedValues: [],
+    customOtherValues: [],
+    selectedCustomOtherValues: [],
+    otherDraft: '',
+  };
   return stateById[questionId];
 }
 
@@ -108,37 +99,13 @@ export async function runQuestionnaireUI(
       questionOptionCursorById: Object.fromEntries(questions.map((question) => [question.id, 0])),
       reviewCursor: 0,
       inputMode: 'navigate',
-      editingQuestionId: undefined,
       returnToReview: false,
       returnReviewCursor: 0,
       questionStateById: createInitialQuestionStateById(questions),
     };
 
-    const editorTheme: EditorTheme = {
-      borderColor: (text) => theme.fg('accent', text),
-      selectList: {
-        selectedPrefix: (text) => theme.fg('accent', text),
-        selectedText: (text) => theme.fg('accent', text),
-        description: (text) => theme.fg('muted', text),
-        scrollInfo: (text) => theme.fg('dim', text),
-        noMatch: (text) => theme.fg('warning', text),
-      },
-    };
-
-    const editor = new Editor(tui, editorTheme);
-
     let cachedWidth: number | undefined;
     let cachedLines: string[] | undefined;
-
-    editor.onSubmit = (value) => {
-      if (!uiState.editingQuestionId) return;
-      const selection = ensureQuestionState(uiState.questionStateById, uiState.editingQuestionId);
-      selection.wasOtherSelected = true;
-      selection.otherText = value.trim();
-      uiState.inputMode = 'navigate';
-      uiState.editingQuestionId = undefined;
-      invalidate();
-    };
 
     function invalidate() {
       cachedWidth = undefined;
@@ -156,7 +123,6 @@ export async function runQuestionnaireUI(
 
     function clearInputMode() {
       uiState.inputMode = 'navigate';
-      uiState.editingQuestionId = undefined;
     }
 
     function getActiveQuestion(): NormalizedQuestion | undefined {
@@ -205,29 +171,22 @@ export async function runQuestionnaireUI(
     function handleQuestionSelection(question: NormalizedQuestion, option: RenderOption) {
       const selection = ensureQuestionState(uiState.questionStateById, question.id);
 
-      if (option.kind === 'other') {
-        if (question.selectionMode === 'single') {
-          selection.listedSelectedValues = [];
-        }
-        selection.wasOtherSelected = true;
-        uiState.inputMode = 'otherInput';
-        uiState.editingQuestionId = question.id;
-        editor.setText(selection.otherText);
+      if (option.kind === 'customOther') {
+        toggleCustomOther(question, selection, option.value);
+        invalidate();
+        return;
+      }
+
+      if (option.kind === 'otherDraft') {
+        commitOtherDraft(question, selection);
         invalidate();
         return;
       }
 
       if (question.selectionMode === 'single') {
-        selection.listedSelectedValues = [option.value];
-        selection.wasOtherSelected = false;
-        selection.otherText = '';
+        toggleListedOption(question, selection, option.value);
       } else {
-        const existing = new Set(selection.listedSelectedValues);
-        if (existing.has(option.value)) existing.delete(option.value);
-        else existing.add(option.value);
-        selection.listedSelectedValues = question.options
-          .map((item) => item.value)
-          .filter((value) => existing.has(value));
+        toggleListedOption(question, selection, option.value);
       }
 
       invalidate();
@@ -246,7 +205,8 @@ export async function runQuestionnaireUI(
     function moveQuestionCursor(delta: number) {
       const question = getActiveQuestion();
       if (!question) return;
-      const options = getRenderOptions(question);
+      const selection = ensureQuestionState(uiState.questionStateById, question.id);
+      const options = getQuestionRenderOptions(question, selection);
       if (options.length === 0) return;
       const currentCursor = uiState.questionOptionCursorById[question.id] ?? 0;
       uiState.questionOptionCursorById[question.id] = clamp(
@@ -257,18 +217,28 @@ export async function runQuestionnaireUI(
       invalidate();
     }
 
-    function handleInput(data: string) {
-      if (uiState.inputMode === 'otherInput') {
-        if (matchesKey(data, Key.escape)) {
-          clearInputMode();
-          invalidate();
-          return;
-        }
-        editor.handleInput(data);
-        invalidate();
-        return;
-      }
+    function getActiveQuestionOption():
+      | { question: NormalizedQuestion; selection: QuestionSelectionState; option: RenderOption }
+      | undefined {
+      const question = getActiveQuestion();
+      if (!question) return undefined;
+      const selection = ensureQuestionState(uiState.questionStateById, question.id);
+      const options = getQuestionRenderOptions(question, selection);
+      const cursor = clamp(
+        uiState.questionOptionCursorById[question.id] ?? 0,
+        0,
+        options.length - 1,
+      );
+      const option = options[cursor];
+      if (!option) return undefined;
+      return { question, selection, option };
+    }
 
+    function isPrintableInput(data: string): boolean {
+      return data.length === 1 && data >= ' ' && data !== '\u007f';
+    }
+
+    function handleInput(data: string) {
       if (matchesKey(data, Key.left)) {
         switchTabs(-1);
         return;
@@ -343,16 +313,31 @@ export async function runQuestionnaireUI(
         return;
       }
 
+      const activeOption = getActiveQuestionOption();
+
+      if (activeOption?.option.kind === 'otherDraft') {
+        if (matchesKey(data, Key.enter)) {
+          commitOtherDraft(activeOption.question, activeOption.selection);
+          invalidate();
+          return;
+        }
+
+        if (matchesKey(data, Key.backspace) || data === '\u007f') {
+          deleteOtherDraftText(activeOption.selection);
+          invalidate();
+          return;
+        }
+
+        if (isPrintableInput(data)) {
+          appendOtherDraftText(activeOption.selection, data);
+          invalidate();
+          return;
+        }
+      }
+
       if (isSpaceKey(data)) {
-        const options = getRenderOptions(question);
-        const cursor = clamp(
-          uiState.questionOptionCursorById[question.id] ?? 0,
-          0,
-          options.length - 1,
-        );
-        const option = options[cursor];
-        if (!option) return;
-        handleQuestionSelection(question, option);
+        if (!activeOption) return;
+        handleQuestionSelection(activeOption.question, activeOption.option);
         return;
       }
 
@@ -387,7 +372,7 @@ export async function runQuestionnaireUI(
 
     function renderQuestionBody(width: number, lines: string[], question: NormalizedQuestion) {
       const selection = ensureQuestionState(uiState.questionStateById, question.id);
-      const options = getRenderOptions(question);
+      const options = getQuestionRenderOptions(question, selection);
       const cursor = clamp(
         uiState.questionOptionCursorById[question.id] ?? 0,
         0,
@@ -401,16 +386,22 @@ export async function runQuestionnaireUI(
         const isCursor = cursor === index;
         const prefix = isCursor ? theme.fg('accent', '> ') : '  ';
 
-        if (option.kind === 'other') {
-          const activeOtherText = selection.otherText.trim();
-          const label = activeOtherText
-            ? `Other: "${activeOtherText}"`
-            : selection.wasOtherSelected
-              ? 'Other (empty)'
-              : 'Other';
-          const marker = selection.wasOtherSelected ? '[x]' : '[ ]';
-          const color = selection.wasOtherSelected ? 'accent' : 'text';
-          pushWrappedWithPrefix(lines, prefix, theme.fg(color, `${marker} ${label}`), width);
+        if (option.kind === 'customOther') {
+          const selected = selection.selectedCustomOtherValues.includes(option.value);
+          const marker = selected ? '[x]' : '[ ]';
+          const color = selected ? 'accent' : 'text';
+          pushWrappedWithPrefix(lines, prefix, theme.fg(color, `${marker} ${option.label}`), width);
+          continue;
+        }
+
+        if (option.kind === 'otherDraft') {
+          pushWrappedWithPrefix(
+            lines,
+            prefix,
+            theme.fg(isCursor ? 'accent' : 'text', `[ ] ${option.label}`),
+            width,
+          );
+          pushWrappedWithPrefix(lines, '    ', theme.fg('muted', 'Enter to add'), width);
           continue;
         }
 
@@ -421,14 +412,6 @@ export async function runQuestionnaireUI(
 
         if (option.description) {
           pushWrappedWithPrefix(lines, '    ', theme.fg('muted', option.description), width);
-        }
-      }
-
-      if (uiState.inputMode === 'otherInput' && uiState.editingQuestionId === question.id) {
-        lines.push('');
-        lines.push(truncateToWidth(theme.fg('muted', 'Other input:'), width));
-        for (const line of editor.render(Math.max(10, width - 2))) {
-          lines.push(truncateToWidth(` ${line}`, width));
         }
       }
     }
@@ -471,14 +454,13 @@ export async function runQuestionnaireUI(
     function renderHint(width: number, lines: string[]) {
       let hint = '';
 
-      if (uiState.inputMode === 'otherInput') {
-        hint = 'Enter submits Other text • Esc exits input mode';
-      } else if (uiState.activeTabIndex === reviewTabIndex) {
+      if (uiState.activeTabIndex === reviewTabIndex) {
         hint = '←→ tabs • ↑↓ review row • Space edit • Enter submit • Esc back';
       } else if (uiState.returnToReview) {
-        hint = 'Editing from Review • press r to return';
+        hint = 'Editing from Review • type on Other • Enter add • Space toggle • r return';
       } else {
-        hint = '←→ tabs • ↑↓ options • Space select/edit • r review • Esc cancel';
+        hint =
+          '←→ tabs • ↑↓ options • type on Other • Enter add • Space toggle • r review • Esc cancel';
       }
 
       lines.push('');

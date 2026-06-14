@@ -16,7 +16,7 @@ pi install git:github.com/tanqiuliu/pi-extensions
 
 | Feature | Name | Notes |
 |---|---|---|
-| Tool | `questionnaire` | Collects structured user answers with single/multi select + optional Other text |
+| Tool | `questionnaire` | Collects structured user answers with single/multi select + reusable custom Other options |
 | Command | `/questionnaire` | Demo flow using `Scope`, `Priority`, `Approach` |
 
 ## Input schema (summary)
@@ -53,6 +53,7 @@ Validation includes:
     questionId: string;
     questionLabel: string;
     selectedOptions: Array<{ value: string; label: string }>;
+    otherTexts: string[];
     otherText: string | null;
     wasOtherSelected: boolean;
   }>;
@@ -60,10 +61,10 @@ Validation includes:
 }
 ```
 
-`Other` answers are rendered explicitly as:
+`Other` answers are rendered explicitly, including multiple custom answers:
 
 ```text
-Other: "GraphQL"
+Other: "GraphQL", Other: "REST"
 ```
 
 ## Keyboard model
@@ -71,15 +72,15 @@ Other: "GraphQL"
 - `← / →`: switch tabs (question tabs + Review tab)
 - `↑ / ↓`: move option cursor (question tab) or row cursor (Review tab)
 - `Space`:
-  - question tab: select/toggle option or enter Other input
+  - question tab: select/toggle listed options and committed Other options
   - review tab: jump to selected question for editing
+- Typing while the cursor is on `Other`: edit the inline Other draft
 - `r`: jump to Review tab
 - `Esc` hierarchy:
-  1. exit Other input mode
-  2. from Review, go back to prior question tab
-  3. from question tab outermost, cancel questionnaire
+  1. from Review, go back to prior question tab
+  2. from question tab outermost, cancel questionnaire
 - `Enter`:
-  - in Other editor: submit typed text
+  - on the inline Other draft: add it as a selected custom option and show a new Other draft row
   - in Review: submit only when all required answers are valid
 
 ## Example tool call
@@ -119,7 +120,7 @@ Other: "GraphQL"
 Completed (collapsed):
 
 ```text
-✓ Scope: High • Priority: P1 • Approach: Other: "GraphQL"
+✓ Scope: High • Priority: P1 • Approach: Other: "GraphQL", Other: "REST"
 ```
 
 Cancelled:

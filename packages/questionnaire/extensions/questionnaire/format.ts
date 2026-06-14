@@ -6,6 +6,7 @@ import type {
   QuestionnaireResult,
   SelectedOption,
 } from './types.js';
+import { createEmptyQuestionState } from './question-state.js';
 
 export function validateQuestions(
   questions: QuestionInput[],
@@ -80,20 +81,11 @@ export function normalizeQuestions(questions: QuestionInput[]): NormalizedQuesti
 export function createInitialQuestionStateById(
   questions: NormalizedQuestion[],
 ): Record<string, QuestionSelectionState> {
-  return Object.fromEntries(
-    questions.map((question) => [
-      question.id,
-      {
-        listedSelectedValues: [],
-        otherText: '',
-        wasOtherSelected: false,
-      } satisfies QuestionSelectionState,
-    ]),
-  );
+  return Object.fromEntries(questions.map((question) => [question.id, createEmptyQuestionState()]));
 }
 
 function hasValidOtherText(state: QuestionSelectionState): boolean {
-  return state.wasOtherSelected && state.otherText.trim().length > 0;
+  return state.selectedCustomOtherValues.some((value) => value.trim().length > 0);
 }
 
 export function isAnswerValid(
@@ -104,7 +96,8 @@ export function isAnswerValid(
   const hasOtherText = hasValidOtherText(state);
 
   if (question.selectionMode === 'single') {
-    const hasSingleListed = selectedListedCount === 1 && !state.wasOtherSelected;
+    const hasSingleListed =
+      selectedListedCount === 1 && state.selectedCustomOtherValues.length === 0;
     const hasSingleOther = selectedListedCount === 0 && hasOtherText;
     return hasSingleListed || hasSingleOther;
   }
@@ -132,14 +125,17 @@ export function normalizeAnswer(
     .filter((option) => selectedSet.has(option.value))
     .map((option) => ({ value: option.value, label: option.label }));
 
-  const trimmedOther = state.otherText.trim();
+  const otherTexts = state.selectedCustomOtherValues
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 
   return {
     questionId: question.id,
     questionLabel: question.label,
     selectedOptions,
-    otherText: state.wasOtherSelected && trimmedOther ? trimmedOther : null,
-    wasOtherSelected: state.wasOtherSelected,
+    otherTexts,
+    otherText: otherTexts[0] ?? null,
+    wasOtherSelected: otherTexts.length > 0,
   };
 }
 
@@ -152,13 +148,9 @@ export function normalizeAnswers(
   );
 }
 
-function createEmptyQuestionState(): QuestionSelectionState {
-  return { listedSelectedValues: [], otherText: '', wasOtherSelected: false };
-}
-
 export function formatAnswerValue(answer: NormalizedAnswer): string {
   const listed = answer.selectedOptions.map((option) => option.label).join(', ');
-  const other = answer.otherText ? `Other: "${answer.otherText}"` : '';
+  const other = answer.otherTexts.map((text) => `Other: "${text}"`).join(', ');
 
   if (listed && other) return `${listed} + ${other}`;
   if (listed) return listed;
