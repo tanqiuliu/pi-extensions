@@ -14,10 +14,14 @@ import {
   normalizeAnswers,
 } from './format.js';
 import {
+  appendFreeFormText,
   appendOtherDraftText,
   commitOtherDraft,
+  createEmptyQuestionState,
+  deleteFreeFormText,
   deleteOtherDraftText,
   getQuestionRenderOptions,
+  selectSingleOther,
   toggleCustomOther,
   toggleListedOption,
 } from './question-state.js';
@@ -31,6 +35,10 @@ import type {
 
 const REVIEW_LABEL_READY = ' ✓ Review ';
 const REVIEW_LABEL_PENDING = ' □ Review ';
+const ACTION_VALUE = '__action__';
+
+type ActionRow = { kind: 'action'; value: string; label: string };
+type NavRow = RenderOption | ActionRow;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -77,20 +85,21 @@ function ensureQuestionState(
   stateById: Record<string, QuestionSelectionState>,
   questionId: string,
 ): QuestionSelectionState {
-  stateById[questionId] ??= {
-    listedSelectedValues: [],
-    customOtherValues: [],
-    selectedCustomOtherValues: [],
-    otherDraft: '',
-  };
+  stateById[questionId] ??= createEmptyQuestionState();
   return stateById[questionId];
+}
+
+function isPrintableInput(data: string): boolean {
+  return data.length === 1 && data >= ' ' && data !== '\u007f';
 }
 
 export async function runQuestionnaireUI(
   ctx: Pick<ExtensionContext, 'ui'>,
   questions: NormalizedQuestion[],
 ): Promise<QuestionnaireResult> {
-  const reviewTabIndex = questions.length;
+  const hasReview = questions.length > 1;
+  const reviewTabIndex = hasReview ? questions.length : -1;
+  const lastQuestionIndex = questions.length - 1;
 
   return ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
     const uiState: QuestionnaireUIState = {
@@ -121,26 +130,35 @@ export async function runQuestionnaireUI(
       });
     }
 
-    function clearInputMode() {
-      uiState.inputMode = 'navigate';
-    }
-
     function getActiveQuestion(): NormalizedQuestion | undefined {
       if (uiState.activeTabIndex >= questions.length) return undefined;
       return questions[uiState.activeTabIndex];
     }
 
+    function actionLabelFor(index: number): string {
+      if (!hasReview) return 'Submit';
+      if (index === lastQuestionIndex) return 'Review';
+      return 'Next question';
+    }
+
+    function getNavRows(question: NormalizedQuestion, state: QuestionSelectionState): NavRow[] {
+      const options = getQuestionRenderOptions(question, state);
+      const action: ActionRow = {
+        kind: 'action',
+        value: ACTION_VALUE,
+        label: actionLabelFor(uiState.activeTabIndex),
+      };
+      return [...options, action];
+    }
+
     function switchTabs(delta: number) {
-      if (questions.length === 0) return;
-      const totalTabs = questions.length + 1;
+      const totalTabs = hasReview ? questions.length + 1 : questions.length;
+      if (totalTabs <= 1) return;
       const nextTab = (uiState.activeTabIndex + delta + totalTabs) % totalTabs;
 
       if (uiState.activeTabIndex < questions.length) {
         uiState.lastQuestionTabIndex = uiState.activeTabIndex;
       }
-
-      clearInputMode();
-
       if (nextTab < questions.length) {
         uiState.lastQuestionTabIndex = nextTab;
       }
@@ -150,92 +168,114 @@ export async function runQuestionnaireUI(
     }
 
     function jumpToReview() {
+      if (!hasReview) return;
       if (uiState.activeTabIndex < questions.length) {
         uiState.lastQuestionTabIndex = uiState.activeTabIndex;
       }
 
       if (uiState.returnToReview) {
-        uiState.reviewCursor = clamp(
-          uiState.returnReviewCursor,
-          0,
-          Math.max(0, questions.length - 1),
-        );
+        uiState.reviewCursor = clamp(uiState.returnReviewCursor, 0, lastQuestionIndex);
       }
 
       uiState.returnToReview = false;
       uiState.activeTabIndex = reviewTabIndex;
-      clearInputMode();
-      invalidate();
-    }
-
-    function handleQuestionSelection(question: NormalizedQuestion, option: RenderOption) {
-      const selection = ensureQuestionState(uiState.questionStateById, question.id);
-
-      if (option.kind === 'customOther') {
-        toggleCustomOther(question, selection, option.value);
-        invalidate();
-        return;
-      }
-
-      if (option.kind === 'otherDraft') {
-        commitOtherDraft(question, selection);
-        invalidate();
-        return;
-      }
-
-      if (question.selectionMode === 'single') {
-        toggleListedOption(question, selection, option.value);
-      } else {
-        toggleListedOption(question, selection, option.value);
-      }
-
       invalidate();
     }
 
     function jumpFromReviewToQuestion() {
-      const targetIndex = clamp(uiState.reviewCursor, 0, Math.max(0, questions.length - 1));
+      const targetIndex = clamp(uiState.reviewCursor, 0, lastQuestionIndex);
       uiState.returnReviewCursor = targetIndex;
       uiState.returnToReview = true;
       uiState.activeTabIndex = targetIndex;
       uiState.lastQuestionTabIndex = targetIndex;
-      clearInputMode();
       invalidate();
+    }
+
+    function activateAction() {
+      const question = getActiveQuestion();
+      if (!question) return;
+
+      if (!hasReview) {
+        if (areAllAnswersValid(questions, uiState.questionStateById)) finalize(false);
+        return;
+      }
+
+      if (uiState.activeTabIndex === lastQuestionIndex) {
+        jumpToReview();
+        return;
+      }
+
+      switchTabs(1);
     }
 
     function moveQuestionCursor(delta: number) {
       const question = getActiveQuestion();
       if (!question) return;
       const selection = ensureQuestionState(uiState.questionStateById, question.id);
-      const options = getQuestionRenderOptions(question, selection);
-      if (options.length === 0) return;
+      const rows = getNavRows(question, selection);
+      if (rows.length === 0) return;
       const currentCursor = uiState.questionOptionCursorById[question.id] ?? 0;
-      uiState.questionOptionCursorById[question.id] = clamp(
-        currentCursor + delta,
-        0,
-        options.length - 1,
-      );
+      uiState.questionOptionCursorById[question.id] = clamp(currentCursor + delta, 0, rows.length - 1);
       invalidate();
     }
 
-    function getActiveQuestionOption():
-      | { question: NormalizedQuestion; selection: QuestionSelectionState; option: RenderOption }
+    function getActiveRow():
+      | { question: NormalizedQuestion; selection: QuestionSelectionState; row: NavRow }
       | undefined {
       const question = getActiveQuestion();
       if (!question) return undefined;
       const selection = ensureQuestionState(uiState.questionStateById, question.id);
-      const options = getQuestionRenderOptions(question, selection);
-      const cursor = clamp(
-        uiState.questionOptionCursorById[question.id] ?? 0,
-        0,
-        options.length - 1,
-      );
-      const option = options[cursor];
-      if (!option) return undefined;
-      return { question, selection, option };
+      const rows = getNavRows(question, selection);
+      const cursor = clamp(uiState.questionOptionCursorById[question.id] ?? 0, 0, rows.length - 1);
+      const row = rows[cursor];
+      if (!row) return undefined;
+      return { question, selection, row };
     }
 
-    function isPrintableInput(data: string): boolean {
-      return data.length === 1 && data >= ' ' && data !== '\u007f';
+    function handleSelectionToggle(
+      question: NormalizedQuestion,
+      selection: QuestionSelectionState,
+      row: NavRow,
+    ) {
+      if (row.kind === 'customOther') {
+        toggleCustomOther(question, selection, row.value);
+        invalidate();
+        return;
+      }
+      if (row.kind === 'listed') {
+        toggleListedOption(question, selection, row.value);
+        invalidate();
+      }
+    }
+
+    function handleReviewInput(data: string) {
+      if (matchesKey(data, Key.up)) {
+        uiState.reviewCursor = clamp(uiState.reviewCursor - 1, 0, lastQuestionIndex);
+        invalidate();
+        return;
+      }
+
+      if (matchesKey(data, Key.down)) {
+        uiState.reviewCursor = clamp(uiState.reviewCursor + 1, 0, lastQuestionIndex);
+        invalidate();
+        return;
+      }
+
+      if (isSpaceKey(data)) {
+        jumpFromReviewToQuestion();
+        return;
+      }
+
+      if (matchesKey(data, Key.enter)) {
+        if (areAllAnswersValid(questions, uiState.questionStateById)) finalize(false);
+        return;
+      }
+
+      if (matchesKey(data, Key.escape)) {
+        uiState.activeTabIndex = clamp(uiState.lastQuestionTabIndex, 0, lastQuestionIndex);
+        uiState.returnToReview = false;
+        invalidate();
+      }
     }
 
     function handleInput(data: string) {
@@ -249,59 +289,14 @@ export async function runQuestionnaireUI(
         return;
       }
 
-      if (isRKey(data)) {
-        jumpToReview();
+      if (hasReview && uiState.activeTabIndex === reviewTabIndex) {
+        handleReviewInput(data);
         return;
       }
 
-      if (uiState.activeTabIndex === reviewTabIndex) {
-        if (matchesKey(data, Key.up)) {
-          uiState.reviewCursor = clamp(
-            uiState.reviewCursor - 1,
-            0,
-            Math.max(0, questions.length - 1),
-          );
-          invalidate();
-          return;
-        }
-
-        if (matchesKey(data, Key.down)) {
-          uiState.reviewCursor = clamp(
-            uiState.reviewCursor + 1,
-            0,
-            Math.max(0, questions.length - 1),
-          );
-          invalidate();
-          return;
-        }
-
-        if (isSpaceKey(data)) {
-          jumpFromReviewToQuestion();
-          return;
-        }
-
-        if (matchesKey(data, Key.enter)) {
-          if (areAllAnswersValid(questions, uiState.questionStateById)) {
-            finalize(false);
-          }
-          return;
-        }
-
-        if (matchesKey(data, Key.escape)) {
-          uiState.activeTabIndex = clamp(
-            uiState.lastQuestionTabIndex,
-            0,
-            Math.max(0, questions.length - 1),
-          );
-          uiState.returnToReview = false;
-          invalidate();
-        }
-
-        return;
-      }
-
-      const question = getActiveQuestion();
-      if (!question) return;
+      const active = getActiveRow();
+      if (!active) return;
+      const { question, selection, row } = active;
 
       if (matchesKey(data, Key.up)) {
         moveQuestionCursor(-1);
@@ -313,37 +308,91 @@ export async function runQuestionnaireUI(
         return;
       }
 
-      const activeOption = getActiveQuestionOption();
-
-      if (activeOption?.option.kind === 'otherDraft') {
+      // Free-text rows capture printable characters (including Space and 'r')
+      // before any global shortcut so typing is never swallowed.
+      if (row.kind === 'freeForm') {
         if (matchesKey(data, Key.enter)) {
-          commitOtherDraft(activeOption.question, activeOption.selection);
+          appendFreeFormText(selection, '\n');
           invalidate();
           return;
         }
-
         if (matchesKey(data, Key.backspace) || data === '\u007f') {
-          deleteOtherDraftText(activeOption.selection);
+          deleteFreeFormText(selection);
           invalidate();
           return;
         }
-
         if (isPrintableInput(data)) {
-          appendOtherDraftText(activeOption.selection, data);
+          appendFreeFormText(selection, data);
           invalidate();
           return;
         }
-      }
-
-      if (isSpaceKey(data)) {
-        if (!activeOption) return;
-        handleQuestionSelection(activeOption.question, activeOption.option);
+        if (matchesKey(data, Key.escape)) finalize(true);
         return;
       }
 
-      if (matchesKey(data, Key.escape)) {
-        finalize(true);
+      if (row.kind === 'otherDraft') {
+        if (question.type === 'singleSelect') {
+          if (matchesKey(data, Key.backspace) || data === '\u007f') {
+            deleteOtherDraftText(selection);
+            selectSingleOther(selection);
+            invalidate();
+            return;
+          }
+          if (isPrintableInput(data)) {
+            appendOtherDraftText(selection, data);
+            selectSingleOther(selection);
+            invalidate();
+            return;
+          }
+          if (matchesKey(data, Key.escape)) finalize(true);
+          return;
+        }
+
+        // multiSelect draft row: Enter commits a reusable Other option.
+        if (matchesKey(data, Key.enter)) {
+          commitOtherDraft(question, selection);
+          invalidate();
+          return;
+        }
+        if (matchesKey(data, Key.backspace) || data === '\u007f') {
+          deleteOtherDraftText(selection);
+          invalidate();
+          return;
+        }
+        if (isPrintableInput(data)) {
+          appendOtherDraftText(selection, data);
+          invalidate();
+          return;
+        }
+        if (matchesKey(data, Key.escape)) finalize(true);
+        return;
       }
+
+      if (isRKey(data) && hasReview) {
+        jumpToReview();
+        return;
+      }
+
+      if (row.kind === 'action') {
+        if (matchesKey(data, Key.enter) || isSpaceKey(data)) {
+          activateAction();
+          return;
+        }
+        if (matchesKey(data, Key.escape)) finalize(true);
+        return;
+      }
+
+      if (isSpaceKey(data)) {
+        handleSelectionToggle(question, selection, row);
+        return;
+      }
+
+      if (matchesKey(data, Key.enter)) {
+        activateAction();
+        return;
+      }
+
+      if (matchesKey(data, Key.escape)) finalize(true);
     }
 
     function renderTabs(width: number, lines: string[]) {
@@ -370,50 +419,100 @@ export async function runQuestionnaireUI(
       lines.push('');
     }
 
+    function renderFreeFormRow(
+      width: number,
+      lines: string[],
+      selection: QuestionSelectionState,
+      isCursor: boolean,
+    ) {
+      const prefix = isCursor ? theme.fg('accent', '> ') : '  ';
+      const caret = isCursor ? '▌' : '';
+
+      const textLines = selection.freeFormText.split('\n');
+      textLines.forEach((line, index) => {
+        const linePrefix = index === 0 ? prefix : '  ';
+        const isLast = index === textLines.length - 1;
+        const display = `${line}${isLast ? caret : ''}` || ' ';
+        pushWrappedWithPrefix(lines, linePrefix, theme.fg('text', display), width);
+      });
+    }
+
+    function renderActionRow(
+      width: number,
+      lines: string[],
+      row: ActionRow,
+      isCursor: boolean,
+      prefix: string,
+    ) {
+      const ready = areAllAnswersValid(questions, uiState.questionStateById);
+      const canActivate = hasReview || ready;
+      const label = `[ ${row.label} ]`;
+      const styled = isCursor
+        ? theme.bg('selectedBg', theme.fg(canActivate ? 'text' : 'muted', label))
+        : theme.fg(canActivate ? 'accent' : 'muted', label);
+
+      lines.push('');
+      pushWrappedWithPrefix(lines, prefix, styled, width);
+
+      if (!hasReview && !ready) {
+        pushWrappedWithPrefix(
+          lines,
+          '    ',
+          theme.fg('warning', 'Complete this question to submit.'),
+          width,
+        );
+      }
+    }
+
     function renderQuestionBody(width: number, lines: string[], question: NormalizedQuestion) {
       const selection = ensureQuestionState(uiState.questionStateById, question.id);
-      const options = getQuestionRenderOptions(question, selection);
-      const cursor = clamp(
-        uiState.questionOptionCursorById[question.id] ?? 0,
-        0,
-        options.length - 1,
-      );
+      const rows = getNavRows(question, selection);
+      const cursor = clamp(uiState.questionOptionCursorById[question.id] ?? 0, 0, rows.length - 1);
 
       pushWrappedText(lines, theme.fg('text', question.prompt), width);
       lines.push('');
 
-      for (const [index, option] of options.entries()) {
+      rows.forEach((row, index) => {
         const isCursor = cursor === index;
         const prefix = isCursor ? theme.fg('accent', '> ') : '  ';
 
-        if (option.kind === 'customOther') {
-          const selected = selection.selectedCustomOtherValues.includes(option.value);
+        if (row.kind === 'freeForm') {
+          renderFreeFormRow(width, lines, selection, isCursor);
+          return;
+        }
+
+        if (row.kind === 'action') {
+          renderActionRow(width, lines, row, isCursor, prefix);
+          return;
+        }
+
+        if (row.kind === 'customOther') {
+          const selected = selection.selectedCustomOtherValues.includes(row.value);
           const marker = selected ? '[x]' : '[ ]';
           const color = selected ? 'accent' : 'text';
-          pushWrappedWithPrefix(lines, prefix, theme.fg(color, `${marker} ${option.label}`), width);
-          continue;
+          pushWrappedWithPrefix(lines, prefix, theme.fg(color, `${marker} ${row.label}`), width);
+          return;
         }
 
-        if (option.kind === 'otherDraft') {
-          pushWrappedWithPrefix(
-            lines,
-            prefix,
-            theme.fg(isCursor ? 'accent' : 'text', `[ ] ${option.label}`),
-            width,
-          );
-          pushWrappedWithPrefix(lines, '    ', theme.fg('muted', 'Enter to add'), width);
-          continue;
+        if (row.kind === 'otherDraft') {
+          const selected = question.type === 'singleSelect' && selection.otherSelected;
+          const marker = selected ? '[x]' : '[ ]';
+          const color = selected || isCursor ? 'accent' : 'text';
+          pushWrappedWithPrefix(lines, prefix, theme.fg(color, `${marker} ${row.label}`), width);
+          const hint = question.type === 'multiSelect' ? 'Enter to add' : 'Type a custom answer';
+          pushWrappedWithPrefix(lines, '    ', theme.fg('muted', hint), width);
+          return;
         }
 
-        const selected = selection.listedSelectedValues.includes(option.value);
+        const selected = selection.listedSelectedValues.includes(row.value);
         const marker = selected ? '[x]' : '[ ]';
         const color = selected ? 'accent' : 'text';
-        pushWrappedWithPrefix(lines, prefix, theme.fg(color, `${marker} ${option.label}`), width);
+        pushWrappedWithPrefix(lines, prefix, theme.fg(color, `${marker} ${row.label}`), width);
 
-        if (option.description) {
-          pushWrappedWithPrefix(lines, '    ', theme.fg('muted', option.description), width);
+        if (row.description) {
+          pushWrappedWithPrefix(lines, '    ', theme.fg('muted', row.description), width);
         }
-      }
+      });
     }
 
     function renderReviewBody(width: number, lines: string[]) {
@@ -454,13 +553,18 @@ export async function runQuestionnaireUI(
     function renderHint(width: number, lines: string[]) {
       let hint = '';
 
-      if (uiState.activeTabIndex === reviewTabIndex) {
+      if (hasReview && uiState.activeTabIndex === reviewTabIndex) {
         hint = '←→ tabs • ↑↓ review row • Space edit • Enter submit • Esc back';
-      } else if (uiState.returnToReview) {
-        hint = 'Editing from Review • type on Other • Enter add • Space toggle • r return';
       } else {
-        hint =
-          '←→ tabs • ↑↓ options • type on Other • Enter add • Space toggle • r review • Esc cancel';
+        const question = getActiveQuestion();
+        const parts: string[] = [];
+        if (hasReview) parts.push('←→ tabs');
+        parts.push('↑↓ move');
+        if (question?.type === 'freeForm') parts.push('type to answer', 'Enter newline');
+        else parts.push('Space select');
+        if (hasReview) parts.push('r review');
+        parts.push('Enter button', 'Esc cancel');
+        hint = parts.join(' • ');
       }
 
       lines.push('');
@@ -474,7 +578,7 @@ export async function runQuestionnaireUI(
 
       const lines: string[] = [];
 
-      renderTabs(width, lines);
+      if (hasReview) renderTabs(width, lines);
 
       const activeQuestion = getActiveQuestion();
       if (activeQuestion) {

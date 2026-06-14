@@ -1,10 +1,14 @@
 import { StringEnum } from '@earendil-works/pi-ai';
 import { Type, type Static } from 'typebox';
 
-export const SelectionModeSchema = StringEnum(['single', 'multiple'] as const, {
-  description: 'Selection mode: single choice or multiple choices.',
-  default: 'single',
-});
+export const QuestionTypeSchema = StringEnum(
+  ['singleSelect', 'multiSelect', 'freeForm'] as const,
+  {
+    description:
+      'Question type. singleSelect: one listed choice plus an always-available Other field. multiSelect: many listed choices plus reusable Other options. freeForm: a free-text answer with no listed options.',
+    default: 'singleSelect',
+  },
+);
 
 export const QuestionOptionSchema = Type.Object({
   value: Type.String({ description: 'Stable value returned when this option is selected.' }),
@@ -20,14 +24,16 @@ export const QuestionSchema = Type.Object({
     Type.String({ description: 'Short label shown in tabs and summaries (defaults to id).' }),
   ),
   prompt: Type.String({ description: 'Full prompt shown for this question.' }),
-  selectionMode: Type.Optional(SelectionModeSchema),
-  options: Type.Array(QuestionOptionSchema, {
-    minItems: 1,
-    description: 'Options available to the user.',
-  }),
+  type: Type.Optional(QuestionTypeSchema),
+  options: Type.Optional(
+    Type.Array(QuestionOptionSchema, {
+      description: 'Options for singleSelect/multiSelect questions. Omit for freeForm.',
+    }),
+  ),
   allowOther: Type.Optional(
     Type.Boolean({
-      description: 'Whether the question includes an Other free-text option (default true).',
+      description:
+        'For multiSelect: include reusable Other free-text options (default true). singleSelect always includes an Other field; ignored for freeForm.',
     }),
   ),
 });
@@ -40,7 +46,7 @@ export const QuestionnaireParamsSchema = Type.Object({
   }),
 });
 
-export type SelectionMode = Static<typeof SelectionModeSchema>;
+export type QuestionType = Static<typeof QuestionTypeSchema>;
 export type QuestionOption = Static<typeof QuestionOptionSchema>;
 export type QuestionInput = Static<typeof QuestionSchema>;
 export type QuestionnaireParams = Static<typeof QuestionnaireParamsSchema>;

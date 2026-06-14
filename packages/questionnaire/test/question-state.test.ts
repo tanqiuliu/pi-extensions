@@ -1,15 +1,18 @@
 import { describe, expect, test } from 'bun:test';
 import {
   formatAnswerValue,
+  isAnswerValid,
   normalizeAnswer,
 } from '../extensions/questionnaire/format.js';
 import {
+  appendFreeFormText,
   commitOtherDraft,
   createEmptyQuestionState,
   getQuestionRenderOptions,
-  updateOtherDraft,
+  selectSingleOther,
   toggleCustomOther,
   toggleListedOption,
+  updateOtherDraft,
 } from '../extensions/questionnaire/question-state.js';
 import type { NormalizedQuestion } from '../extensions/questionnaire/types.js';
 
@@ -17,7 +20,7 @@ const singleQuestion: NormalizedQuestion = {
   id: 'scope',
   label: 'Scope',
   prompt: 'Pick a scope',
-  selectionMode: 'single',
+  type: 'singleSelect',
   options: [
     { value: 'small', label: 'Small' },
     { value: 'large', label: 'Large' },
@@ -27,11 +30,66 @@ const singleQuestion: NormalizedQuestion = {
 
 const multipleQuestion: NormalizedQuestion = {
   ...singleQuestion,
-  selectionMode: 'multiple',
+  type: 'multiSelect',
 };
 
-describe('question state custom Other options', () => {
-  test('commits typed Other draft as a selected custom option and creates a new draft row', () => {
+const freeFormQuestion: NormalizedQuestion = {
+  id: 'notes',
+  label: 'Notes',
+  prompt: 'Add notes',
+  type: 'freeForm',
+  options: [],
+  allowOther: true,
+};
+
+describe('singleSelect Other field', () => {
+  test('always offers exactly one Other row and never spawns a second', () => {
+    const state = createEmptyQuestionState();
+
+    expect(getQuestionRenderOptions(singleQuestion, state).map((o) => o.label)).toEqual([
+      'Small',
+      'Large',
+      'Other: ',
+    ]);
+
+    updateOtherDraft(state, 'GraphQL');
+    selectSingleOther(state);
+
+    expect(getQuestionRenderOptions(singleQuestion, state).map((o) => o.label)).toEqual([
+      'Small',
+      'Large',
+      'Other: GraphQL',
+    ]);
+    expect(state.otherSelected).toBe(true);
+  });
+
+  test('selecting the Other field clears listed selection and vice versa', () => {
+    const state = createEmptyQuestionState();
+
+    toggleListedOption(singleQuestion, state, 'small');
+    updateOtherDraft(state, 'GraphQL');
+    selectSingleOther(state);
+    expect(state.listedSelectedValues).toEqual([]);
+    expect(state.otherSelected).toBe(true);
+
+    toggleListedOption(singleQuestion, state, 'large');
+    expect(state.listedSelectedValues).toEqual(['large']);
+    expect(state.otherSelected).toBe(false);
+  });
+
+  test('Other counts as a valid answer only once text is selected', () => {
+    const state = createEmptyQuestionState();
+    expect(isAnswerValid(singleQuestion, state)).toBe(false);
+
+    updateOtherDraft(state, 'GraphQL');
+    selectSingleOther(state);
+    expect(isAnswerValid(singleQuestion, state)).toBe(true);
+    expect(normalizeAnswer(singleQuestion, state).otherTexts).toEqual(['GraphQL']);
+  });
+});
+
+describe('multiSelect custom Other options', () => {
+  test('commits a draft into a reusable selected option and reopens an empty draft', () => {
     const state = createEmptyQuestionState();
 
     updateOtherDraft(state, 'GraphQL');
@@ -40,7 +98,7 @@ describe('question state custom Other options', () => {
     expect(state.customOtherValues).toEqual(['GraphQL']);
     expect(state.selectedCustomOtherValues).toEqual(['GraphQL']);
     expect(state.otherDraft).toBe('');
-    expect(getQuestionRenderOptions(multipleQuestion, state).map((option) => option.label)).toEqual([
+    expect(getQuestionRenderOptions(multipleQuestion, state).map((o) => o.label)).toEqual([
       'Small',
       'Large',
       'Other: GraphQL',
@@ -48,20 +106,20 @@ describe('question state custom Other options', () => {
     ]);
   });
 
-  test('toggles committed custom Other options without deleting them', () => {
+  test('toggles committed custom options without deleting them', () => {
     const state = createEmptyQuestionState();
     updateOtherDraft(state, 'GraphQL');
     commitOtherDraft(multipleQuestion, state);
 
     toggleCustomOther(multipleQuestion, state, 'GraphQL');
-    expect(state.customOtherValues).toEqual(['GraphQL']);
     expect(state.selectedCustomOtherValues).toEqual([]);
+    expect(state.customOtherValues).toEqual(['GraphQL']);
 
     toggleCustomOther(multipleQuestion, state, 'GraphQL');
     expect(state.selectedCustomOtherValues).toEqual(['GraphQL']);
   });
 
-  test('keeps multiple custom Other options selectable for multi-select questions', () => {
+  test('keeps multiple custom options and formats them together', () => {
     const state = createEmptyQuestionState();
 
     updateOtherDraft(state, 'GraphQL');
@@ -69,55 +127,30 @@ describe('question state custom Other options', () => {
     updateOtherDraft(state, 'REST');
     commitOtherDraft(multipleQuestion, state);
 
-    expect(state.customOtherValues).toEqual(['GraphQL', 'REST']);
-    expect(state.selectedCustomOtherValues).toEqual(['GraphQL', 'REST']);
     expect(normalizeAnswer(multipleQuestion, state).otherTexts).toEqual(['GraphQL', 'REST']);
     expect(formatAnswerValue(normalizeAnswer(multipleQuestion, state))).toBe(
       'Other: "GraphQL", Other: "REST"',
     );
   });
+});
 
-  test('single-select custom Other choices replace listed selections', () => {
+describe('freeForm answers', () => {
+  test('renders a single free-form row and validates on non-empty text', () => {
     const state = createEmptyQuestionState();
 
-    toggleListedOption(singleQuestion, state, 'small');
-    updateOtherDraft(state, 'GraphQL');
-    commitOtherDraft(singleQuestion, state);
+    expect(getQuestionRenderOptions(freeFormQuestion, state).map((o) => o.kind)).toEqual([
+      'freeForm',
+    ]);
+    expect(isAnswerValid(freeFormQuestion, state)).toBe(false);
 
-    expect(state.listedSelectedValues).toEqual([]);
-    expect(state.selectedCustomOtherValues).toEqual(['GraphQL']);
+    appendFreeFormText(state, 'Needs SSO');
+    expect(isAnswerValid(freeFormQuestion, state)).toBe(true);
+    expect(normalizeAnswer(freeFormQuestion, state).freeFormText).toBe('Needs SSO');
   });
 
-  test('single-select keeps only the latest custom Other option', () => {
+  test('collapses newlines when formatting the answer value', () => {
     const state = createEmptyQuestionState();
-
-    updateOtherDraft(state, 'GraphQL');
-    commitOtherDraft(singleQuestion, state);
-    updateOtherDraft(state, 'REST');
-    commitOtherDraft(singleQuestion, state);
-
-    expect(state.customOtherValues).toEqual(['REST']);
-    expect(state.selectedCustomOtherValues).toEqual(['REST']);
-    expect(getQuestionRenderOptions(singleQuestion, state).map((option) => option.label)).toEqual([
-      'Small',
-      'Large',
-      'Other: REST',
-      'Other: ',
-    ]);
-  });
-
-  test('custom Other rows use the same unquoted display style as the draft row', () => {
-    const state = createEmptyQuestionState();
-
-    updateOtherDraft(state, 'GraphQL');
-    commitOtherDraft(multipleQuestion, state);
-    updateOtherDraft(state, 'REST');
-
-    expect(getQuestionRenderOptions(multipleQuestion, state).map((option) => option.label)).toEqual([
-      'Small',
-      'Large',
-      'Other: GraphQL',
-      'Other: REST',
-    ]);
+    appendFreeFormText(state, 'Line one\nLine two');
+    expect(formatAnswerValue(normalizeAnswer(freeFormQuestion, state))).toBe('Line one / Line two');
   });
 });

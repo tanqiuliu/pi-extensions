@@ -34,7 +34,13 @@ export function validateQuestions(
     }
     idSet.add(questionId);
 
-    if (!question.options.length) {
+    // freeForm questions take a free-text answer and need no listed options.
+    if ((question.type ?? 'singleSelect') === 'freeForm') {
+      continue;
+    }
+
+    const options = question.options ?? [];
+    if (!options.length) {
       return {
         valid: false,
         error: `Question "${questionId}" must include at least one listed option.`,
@@ -42,7 +48,7 @@ export function validateQuestions(
     }
 
     const valueSet = new Set<string>();
-    for (const option of question.options) {
+    for (const option of options) {
       const optionValue = option.value.trim();
       if (!optionValue) {
         return {
@@ -64,18 +70,24 @@ export function validateQuestions(
 }
 
 export function normalizeQuestions(questions: QuestionInput[]): NormalizedQuestion[] {
-  return questions.map((question, index) => ({
-    id: question.id.trim(),
-    label: question.label?.trim() || question.id.trim() || `Q${index + 1}`,
-    prompt: question.prompt.trim(),
-    selectionMode: question.selectionMode ?? 'single',
-    options: question.options.map((option) => ({
-      value: option.value.trim(),
-      label: option.label,
-      description: option.description,
-    })),
-    allowOther: question.allowOther !== false,
-  }));
+  return questions.map((question, index) => {
+    const type = question.type ?? 'singleSelect';
+    return {
+      id: question.id.trim(),
+      label: question.label?.trim() || question.id.trim() || `Q${index + 1}`,
+      prompt: question.prompt.trim(),
+      type,
+      options:
+        type === 'freeForm'
+          ? []
+          : (question.options ?? []).map((option) => ({
+              value: option.value.trim(),
+              label: option.label,
+              description: option.description,
+            })),
+      allowOther: question.allowOther !== false,
+    };
+  });
 }
 
 export function createInitialQuestionStateById(
@@ -84,24 +96,24 @@ export function createInitialQuestionStateById(
   return Object.fromEntries(questions.map((question) => [question.id, createEmptyQuestionState()]));
 }
 
-function hasValidOtherText(state: QuestionSelectionState): boolean {
-  return state.selectedCustomOtherValues.some((value) => value.trim().length > 0);
-}
-
 export function isAnswerValid(
   question: NormalizedQuestion,
   state: QuestionSelectionState,
 ): boolean {
-  const selectedListedCount = state.listedSelectedValues.length;
-  const hasOtherText = hasValidOtherText(state);
+  if (question.type === 'freeForm') {
+    return state.freeFormText.trim().length > 0;
+  }
 
-  if (question.selectionMode === 'single') {
-    const hasSingleListed =
-      selectedListedCount === 1 && state.selectedCustomOtherValues.length === 0;
-    const hasSingleOther = selectedListedCount === 0 && hasOtherText;
+  const selectedListedCount = state.listedSelectedValues.length;
+
+  if (question.type === 'singleSelect') {
+    const hasSingleListed = selectedListedCount === 1 && !state.otherSelected;
+    const hasSingleOther =
+      selectedListedCount === 0 && state.otherSelected && state.otherDraft.trim().length > 0;
     return hasSingleListed || hasSingleOther;
   }
 
+  const hasOtherText = state.selectedCustomOtherValues.some((value) => value.trim().length > 0);
   return selectedListedCount > 0 || hasOtherText;
 }
 
@@ -120,14 +132,29 @@ export function normalizeAnswer(
   question: NormalizedQuestion,
   state: QuestionSelectionState,
 ): NormalizedAnswer {
+  if (question.type === 'freeForm') {
+    return {
+      questionId: question.id,
+      questionLabel: question.label,
+      selectedOptions: [],
+      otherTexts: [],
+      otherText: null,
+      wasOtherSelected: false,
+      freeFormText: state.freeFormText.trim(),
+    };
+  }
+
   const selectedSet = new Set(state.listedSelectedValues);
   const selectedOptions: SelectedOption[] = question.options
     .filter((option) => selectedSet.has(option.value))
     .map((option) => ({ value: option.value, label: option.label }));
 
-  const otherTexts = state.selectedCustomOtherValues
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
+  const otherTexts =
+    question.type === 'singleSelect'
+      ? state.otherSelected && state.otherDraft.trim()
+        ? [state.otherDraft.trim()]
+        : []
+      : state.selectedCustomOtherValues.map((value) => value.trim()).filter((v) => v.length > 0);
 
   return {
     questionId: question.id,
@@ -136,6 +163,7 @@ export function normalizeAnswer(
     otherTexts,
     otherText: otherTexts[0] ?? null,
     wasOtherSelected: otherTexts.length > 0,
+    freeFormText: '',
   };
 }
 
@@ -149,6 +177,10 @@ export function normalizeAnswers(
 }
 
 export function formatAnswerValue(answer: NormalizedAnswer): string {
+  if (answer.freeFormText) {
+    return answer.freeFormText.replace(/\s*\n\s*/g, ' / ');
+  }
+
   const listed = answer.selectedOptions.map((option) => option.label).join(', ');
   const other = answer.otherTexts.map((text) => `Other: "${text}"`).join(', ');
 

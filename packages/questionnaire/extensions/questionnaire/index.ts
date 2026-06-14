@@ -9,7 +9,7 @@ import {
   validateQuestions,
 } from './format.js';
 import { QuestionnaireParamsSchema } from './schema.js';
-import type { QuestionInput, QuestionnaireResult, SelectionMode, SelectedOption } from './types.js';
+import type { QuestionInput, QuestionnaireResult, SelectedOption } from './types.js';
 import { runQuestionnaireUI } from './ui.js';
 
 function emptyResult(error?: string): QuestionnaireResult {
@@ -60,33 +60,30 @@ function demoQuestions(): QuestionInput[] {
       id: 'scope',
       label: 'Scope',
       prompt: 'What is the project scope?',
-      selectionMode: 'single' satisfies SelectionMode,
+      type: 'singleSelect',
       options: [
         selectedOption('small', 'Small'),
         selectedOption('medium', 'Medium'),
         selectedOption('high', 'High'),
       ],
-      allowOther: true,
-    },
-    {
-      id: 'priority',
-      label: 'Priority',
-      prompt: 'What priority should we assign?',
-      selectionMode: 'single' satisfies SelectionMode,
-      options: [selectedOption('p0', 'P0'), selectedOption('p1', 'P1'), selectedOption('p2', 'P2')],
-      allowOther: true,
     },
     {
       id: 'approach',
       label: 'Approach',
-      prompt: 'Which implementation approach do you want?',
-      selectionMode: 'single' satisfies SelectionMode,
+      prompt: 'Which implementation approaches are in scope?',
+      type: 'multiSelect',
       options: [
         selectedOption('rest', 'REST API'),
         selectedOption('event-driven', 'Event-driven'),
         selectedOption('serverless', 'Serverless'),
       ],
       allowOther: true,
+    },
+    {
+      id: 'notes',
+      label: 'Notes',
+      prompt: 'Any additional context or constraints?',
+      type: 'freeForm',
     },
   ];
 }

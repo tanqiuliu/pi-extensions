@@ -1,11 +1,16 @@
 import type { NormalizedQuestion, QuestionSelectionState, RenderOption } from './types.js';
 
+export const OTHER_DRAFT_VALUE = '__other_draft__';
+export const FREE_FORM_VALUE = '__free_form__';
+
 export function createEmptyQuestionState(): QuestionSelectionState {
   return {
     listedSelectedValues: [],
     customOtherValues: [],
     selectedCustomOtherValues: [],
     otherDraft: '',
+    otherSelected: false,
+    freeFormText: '',
   };
 }
 
@@ -13,6 +18,10 @@ export function getQuestionRenderOptions(
   question: NormalizedQuestion,
   state: QuestionSelectionState,
 ): RenderOption[] {
+  if (question.type === 'freeForm') {
+    return [{ kind: 'freeForm', value: FREE_FORM_VALUE, label: state.freeFormText }];
+  }
+
   const listed: RenderOption[] = question.options.map((option) => ({
     kind: 'listed',
     value: option.value,
@@ -20,6 +29,19 @@ export function getQuestionRenderOptions(
     description: option.description,
   }));
 
+  const draft: RenderOption = {
+    kind: 'otherDraft',
+    value: OTHER_DRAFT_VALUE,
+    label: `Other: ${state.otherDraft}`,
+  };
+
+  // singleSelect always offers a single Other field; the draft never spawns a
+  // second row because the typed text stays inline on that one row.
+  if (question.type === 'singleSelect') {
+    return listed.concat(draft);
+  }
+
+  // multiSelect: reusable committed Other options followed by a fresh draft row.
   if (!question.allowOther) return listed;
 
   const custom: RenderOption[] = state.customOtherValues.map((value) => ({
@@ -28,11 +50,7 @@ export function getQuestionRenderOptions(
     label: `Other: ${value}`,
   }));
 
-  return listed.concat(custom, {
-    kind: 'otherDraft',
-    value: '__other_draft__',
-    label: `Other: ${state.otherDraft}`,
-  });
+  return listed.concat(custom, draft);
 }
 
 export function updateOtherDraft(state: QuestionSelectionState, value: string) {
@@ -47,23 +65,40 @@ export function deleteOtherDraftText(state: QuestionSelectionState) {
   state.otherDraft = state.otherDraft.slice(0, -1);
 }
 
+export function appendFreeFormText(state: QuestionSelectionState, text: string) {
+  state.freeFormText += text;
+}
+
+export function deleteFreeFormText(state: QuestionSelectionState) {
+  state.freeFormText = state.freeFormText.slice(0, -1);
+}
+
+// singleSelect: choosing the Other field makes its draft text the answer and
+// clears any listed selection.
+export function selectSingleOther(state: QuestionSelectionState) {
+  state.listedSelectedValues = [];
+  state.otherSelected = state.otherDraft.trim().length > 0;
+}
+
+// multiSelect: commit the current draft into a reusable, selected Other option.
 export function commitOtherDraft(
   question: NormalizedQuestion,
   state: QuestionSelectionState,
 ): boolean {
+  if (question.type !== 'multiSelect') return false;
+
   const value = state.otherDraft.trim();
   if (!value) {
     state.otherDraft = '';
     return false;
   }
 
-  if (question.selectionMode === 'single') {
-    state.customOtherValues = [value];
-  } else if (!state.customOtherValues.includes(value)) {
+  if (!state.customOtherValues.includes(value)) {
     state.customOtherValues.push(value);
   }
-
-  selectCustomOther(question, state, value);
+  if (!state.selectedCustomOtherValues.includes(value)) {
+    state.selectedCustomOtherValues.push(value);
+  }
   state.otherDraft = '';
   return true;
 }
@@ -73,9 +108,9 @@ export function toggleListedOption(
   state: QuestionSelectionState,
   value: string,
 ) {
-  if (question.selectionMode === 'single') {
+  if (question.type === 'singleSelect') {
     state.listedSelectedValues = [value];
-    state.selectedCustomOtherValues = [];
+    state.otherSelected = false;
     return;
   }
 
@@ -88,7 +123,7 @@ export function toggleListedOption(
 }
 
 export function toggleCustomOther(
-  question: NormalizedQuestion,
+  _question: NormalizedQuestion,
   state: QuestionSelectionState,
   value: string,
 ) {
@@ -99,21 +134,5 @@ export function toggleCustomOther(
     return;
   }
 
-  selectCustomOther(question, state, value);
-}
-
-function selectCustomOther(
-  question: NormalizedQuestion,
-  state: QuestionSelectionState,
-  value: string,
-) {
-  if (question.selectionMode === 'single') {
-    state.listedSelectedValues = [];
-    state.selectedCustomOtherValues = [value];
-    return;
-  }
-
-  if (!state.selectedCustomOtherValues.includes(value)) {
-    state.selectedCustomOtherValues.push(value);
-  }
+  state.selectedCustomOtherValues.push(value);
 }
