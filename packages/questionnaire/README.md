@@ -9,7 +9,7 @@ It adds:
 ## Install
 
 ```bash
-pi install npm:@tanqiuliu/pi-questionnaire
+pi install git:github.com/tanqiuliu/pi-extensions
 ```
 
 ## What it provides
